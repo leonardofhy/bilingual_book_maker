@@ -145,3 +145,6 @@ log/
 books/
 prompts/
 .pdm-python
+
+# Local translation working area — copyrighted source/translation text, never publish
+translation_preview/
