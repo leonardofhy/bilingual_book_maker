@@ -21,6 +21,13 @@ UNIT_TYPES = {"substantive", "heading", "speaker_label"}
 OUTCOMES = {"selected", "edited", "synthesized", "retranslated"}
 CONFIDENCES = {"high", "medium", "low"}
 CHECK_STATUSES = {"pass", "revise"}
+NATIVE_READ_CRITERIA = {
+    "chinese_information_flow",
+    "content_examples_preserved",
+    "idiomatic_expression",
+    "sentence_restructuring",
+    "voice_rhythm",
+}
 
 
 def read_json(path: Path):
@@ -107,15 +114,17 @@ def matched_terms(source: str, term_entries: list[dict]) -> list[dict]:
 
 def reviewer_profile() -> dict:
     return {
-        "profile_version": 1,
+        "profile_version": 2,
         "role": "资深简体中文科普图书编辑",
         "audience": "中国大陆普通读者，同时不牺牲技术含义",
         "language": "简体中文",
         "publishing_norm": "中国大陆图书标点与技术术语规范",
         "priorities": [
             "命题、否定、范围、因果、指代和语气完整",
-            "中文自然、适合朗读、避免翻译腔",
+            "中文成稿必须像原生中文写作；忠实但保留英语句法仍须返工",
+            "允许拆句、合句、重排信息、改变语法主语和改写惯用语",
             "保留克制、反讽、节奏和角色口吻",
+            "只本地化表达，不替换作者的人物、地点、制度、类比或例子",
             "遵守已定核心术语；未定团队术语不得用于处罚候选",
             "不因候选来源或段落数量产生偏见",
         ],
@@ -124,7 +133,20 @@ def reviewer_profile() -> dict:
             "核心命题无遗漏或歪曲",
             "required 术语一致",
             "简体字及大陆标点合规",
+            "通过中文信息流、句式重组、惯用表达和朗读节奏检查",
+            "作者的例子和类比未被本地化替换",
         ],
+        "allowed_restructuring": [
+            "拆分或合并句子",
+            "重排分句和信息出现顺序",
+            "改变语法主语或改用话题结构",
+            "以中性中文惯用表达替换英语惯用语",
+        ],
+        "content_localization_policy": {
+            "default": "保留作者的例子、人物、地点、制度和类比",
+            "opaque_reference": "优先在句内简短说明；仍无法消化时标记人工复核",
+            "example_substitution": "禁止，除非作为独立改编并获得明确批准",
+        },
         "house_terms": {
             "AI": "AI／人工智能（依语境）",
             "intelligence": "智能",
@@ -249,6 +271,7 @@ def require_ids(rows: list[dict], expected: set[str], stage: str) -> None:
 def validate(args: argparse.Namespace) -> int:
     output = args.output
     manifest = read_json(output / "manifest.json")
+    profile = read_json(output / "config" / "reviewer_profile.json")
     expected = set(manifest["unit_ids"])
     cases = read_jsonl(output / "input" / "cases.jsonl")
     require_ids(cases, expected, "cases")
@@ -290,6 +313,29 @@ def validate(args: argparse.Namespace) -> int:
             item = check.get(name, {})
             if item.get("status") not in CHECK_STATUSES or "issues" not in item:
                 raise ValueError(f"invalid {name} check at {check['unit_id']}")
+        if profile.get("profile_version", 1) >= 2:
+            native_read = check["native_read"]
+            criteria = native_read.get("criteria", {})
+            if set(criteria) != NATIVE_READ_CRITERIA:
+                raise ValueError(
+                    f"native-read criteria incomplete at {check['unit_id']}"
+                )
+            for criterion, assessment in criteria.items():
+                if assessment.get("status") not in CHECK_STATUSES:
+                    raise ValueError(
+                        f"invalid {criterion} status at {check['unit_id']}"
+                    )
+                if not assessment.get("evidence") or not assessment.get("reason"):
+                    raise ValueError(
+                        f"unsupported {criterion} assessment at {check['unit_id']}"
+                    )
+            criteria_status = (
+                "pass"
+                if all(item["status"] == "pass" for item in criteria.values())
+                else "revise"
+            )
+            if native_read["status"] != criteria_status:
+                raise ValueError(f"native-read status mismatch at {check['unit_id']}")
         expected_status = (
             "verified"
             if check["fidelity"]["status"] == check["native_read"]["status"] == "pass"

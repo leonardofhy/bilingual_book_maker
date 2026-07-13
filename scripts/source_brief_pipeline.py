@@ -397,25 +397,27 @@ Analyze the English source before viewing any candidate translation.
 
 def report_status(output: Path, cases: list[dict], finals: list[dict]) -> None:
     final_ids = {row["unit_id"] for row in finals}
-    batch = read_json(output / "batches" / "batch_001.json")
-    completed_batch = [unit_id for unit_id in batch["unit_ids"] if unit_id in final_ids]
+    batches = [
+        (path.stem, read_json(path))
+        for path in sorted((output / "batches").glob("batch_*.json"))
+    ]
     by_type = Counter(
         case["content_type"] for case in cases if case["unit_id"] in final_ids
     )
-    corrections_path = output / "stages" / "review_corrections_batch_001.jsonl"
-    corrections = read_jsonl(corrections_path) if corrections_path.exists() else []
+    corrections = read_stage_rows(output, "review_corrections_batch_*.jsonl")
     lines = [
         "# Source brief status",
         "",
         f"- Total source-only cases: {len(cases)}",
         f"- Final briefs: {len(finals)}",
         f"- Remaining: {len(cases) - len(finals)}",
-        f"- Batch 001 complete: {len(completed_batch)}/{len(batch['unit_ids'])}",
         f"- Review corrections applied: {len(corrections)}",
-        "",
-        "Final briefs by content type:",
-        "",
     ]
+    for batch_name, batch in batches:
+        completed = sum(unit_id in final_ids for unit_id in batch["unit_ids"])
+        label = batch_name.removeprefix("batch_")
+        lines.append(f"- Batch {label} complete: {completed}/{len(batch['unit_ids'])}")
+    lines.extend(["", "Final briefs by content type:", ""])
     lines.extend(f"- {key}: {value}" for key, value in sorted(by_type.items()))
     (output / "reports" / "status.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
@@ -501,6 +503,9 @@ def validate_brief(brief: dict, case: dict) -> None:
 
 
 def apply_review_corrections(manual: list[dict], corrections: list[dict]) -> list[dict]:
+    manual_ids = [row.get("unit_id") for row in manual]
+    if None in manual_ids or len(manual_ids) != len(set(manual_ids)):
+        raise ValueError("duplicate or missing manual brief unit IDs")
     corrected = {row["unit_id"]: dict(row) for row in manual}
     correction_ids = [row.get("unit_id") for row in corrections]
     if None in correction_ids or len(correction_ids) != len(set(correction_ids)):
@@ -529,14 +534,90 @@ def apply_review_corrections(manual: list[dict], corrections: list[dict]) -> lis
     return list(corrected.values())
 
 
+def read_stage_rows(output: Path, pattern: str) -> list[dict]:
+    rows = []
+    for path in sorted((output / "stages").glob(pattern)):
+        rows.extend(read_jsonl(path))
+    return rows
+
+
+def effective_cases(output: Path, cases: list[dict]) -> list[dict]:
+    overrides_path = output / "config" / "format_segment_overrides.json"
+    overrides = read_json(overrides_path) if overrides_path.exists() else {}
+    case_ids = {row["unit_id"] for row in cases}
+    unknown = set(overrides) - case_ids
+    if unknown:
+        raise ValueError(f"format overrides target unknown cases: {sorted(unknown)}")
+    effective = []
+    for case in cases:
+        unit_id = case["unit_id"]
+        segments = overrides.get(unit_id)
+        if segments is None:
+            effective.append(case)
+            continue
+        reconstructed = "".join(segment["text"] for segment in segments)
+        if reconstructed != case["source_text"]:
+            raise ValueError(f"format override does not reconstruct source: {unit_id}")
+        effective.append(
+            {
+                **case,
+                "format_override_applied": True,
+                "format_segments": segments,
+            }
+        )
+    return effective
+
+
+def compile_analysis_rows(output: Path) -> list[dict]:
+    scaffolds = {
+        row["unit_id"]: row for row in read_jsonl(output / "stages" / "scaffolds.jsonl")
+    }
+    analyses = read_stage_rows(output, "analysis_batch_*.jsonl")
+    compiled = []
+    analysis_ids = [row.get("unit_id") for row in analyses]
+    if None in analysis_ids or len(analysis_ids) != len(set(analysis_ids)):
+        raise ValueError("duplicate or missing analysis unit IDs")
+    for analysis in analyses:
+        unit_id = analysis["unit_id"]
+        if unit_id not in scaffolds:
+            raise ValueError(f"analysis target absent from scaffolds: {unit_id}")
+        base = scaffolds[unit_id]
+        meanings = analysis.get("proposition_meanings", [])
+        if len(meanings) != len(base["propositions"]) or not all(meanings):
+            raise ValueError(f"analysis proposition count mismatch: {unit_id}")
+        propositions = [
+            {**proposition, "meaning": meaning, "status": "analyzed"}
+            for proposition, meaning in zip(base["propositions"], meanings)
+        ]
+        brief = {
+            "analysis_independence": analysis.get(
+                "analysis_independence", "source_only_but_same_primary_context"
+            ),
+            "confidence": analysis["confidence"],
+            "constraints": base["constraints"] + analysis["constraints"],
+            "cross_unit": analysis["cross_unit"],
+            "logic": analysis["logic"],
+            "propositions": propositions,
+            "rhetoric": analysis["rhetoric"],
+            "status": FINAL_STATUS,
+            "term_cards": base["term_cards"],
+            "unit_id": unit_id,
+        }
+        if analysis.get("ambiguities"):
+            brief["ambiguities"] = analysis["ambiguities"]
+        compiled.append(brief)
+    return compiled
+
+
 def validate(output: Path, check_hashes: bool = True) -> int:
     manifest = read_json(output / "manifest.json")
     cases = read_jsonl(output / "input" / "cases.jsonl")
     scaffolds = read_jsonl(output / "stages" / "scaffolds.jsonl")
     finals = read_jsonl(output / "stages" / "final.jsonl")
-    corrections_path = output / "stages" / "review_corrections_batch_001.jsonl"
-    corrections = read_jsonl(corrections_path) if corrections_path.exists() else []
+    corrections = read_stage_rows(output, "review_corrections_batch_*.jsonl")
     case_by_id = {row["unit_id"]: row for row in cases}
+    effective_rows = effective_cases(output, cases)
+    effective_case_by_id = {row["unit_id"]: row for row in effective_rows}
     if len(cases) != manifest["total_cases"] or len(case_by_id) != len(cases):
         raise ValueError("case count or uniqueness mismatch")
     if {row["unit_id"] for row in scaffolds} != set(case_by_id):
@@ -557,10 +638,14 @@ def validate(output: Path, check_hashes: bool = True) -> int:
     if not set(final_ids) <= set(case_by_id):
         raise ValueError("unknown final brief unit ID")
     for brief in finals:
-        validate_brief(brief, case_by_id[brief["unit_id"]])
+        validate_brief(brief, effective_case_by_id[brief["unit_id"]])
+    effective_path = output / "stages" / "effective_cases.jsonl"
+    if effective_path.exists() and read_jsonl(effective_path) != effective_rows:
+        raise ValueError("effective cases are stale")
     if corrections:
         final_by_id = {row["unit_id"]: row for row in finals}
-        manual = read_jsonl(output / "stages" / "manual_batch_001.jsonl")
+        manual = read_stage_rows(output, "manual_batch_*.jsonl")
+        manual.extend(compile_analysis_rows(output))
         expected = apply_review_corrections(manual, corrections)
         for brief in expected:
             actual = final_by_id.get(brief["unit_id"])
@@ -582,14 +667,17 @@ def validate(output: Path, check_hashes: bool = True) -> int:
 
 def merge(output: Path) -> int:
     deterministic = read_jsonl(output / "stages" / "deterministic.jsonl")
-    manual = read_jsonl(output / "stages" / "manual_batch_001.jsonl")
-    corrections_path = output / "stages" / "review_corrections_batch_001.jsonl"
-    corrections = read_jsonl(corrections_path) if corrections_path.exists() else []
+    manual = read_stage_rows(output, "manual_batch_*.jsonl")
+    manual.extend(compile_analysis_rows(output))
+    corrections = read_stage_rows(output, "review_corrections_batch_*.jsonl")
     manual = apply_review_corrections(manual, corrections)
     merged = {row["unit_id"]: row for row in deterministic}
     for row in manual:
         merged[row["unit_id"]] = row
     cases = read_jsonl(output / "input" / "cases.jsonl")
+    write_jsonl(
+        output / "stages" / "effective_cases.jsonl", effective_cases(output, cases)
+    )
     order = {row["unit_id"]: index for index, row in enumerate(cases)}
     final_rows = sorted(merged.values(), key=lambda row: order[row["unit_id"]])
     write_jsonl(output / "stages" / "final.jsonl", final_rows)

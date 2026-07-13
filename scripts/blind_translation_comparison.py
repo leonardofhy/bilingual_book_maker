@@ -20,7 +20,22 @@ ERROR_SEVERITIES = {"none", "minor", "major", "critical"}
 COVERAGE_STATUSES = {"preserved", "partial", "omitted", "distorted"}
 CONFIDENCES = {"high", "medium", "low"}
 DIMENSION_RATINGS = {"strong", "acceptable", "weak"}
-REQUIRED_DIMENSIONS = {"naturalness", "logic_references", "terminology", "voice_rhythm"}
+LEGACY_REQUIRED_DIMENSIONS = {
+    "naturalness",
+    "logic_references",
+    "terminology",
+    "voice_rhythm",
+}
+REQUIRED_DIMENSIONS = {
+    "native_chinese_structure",
+    "logic_references",
+    "terminology",
+    "voice_rhythm",
+}
+ACCEPTED_DIMENSION_SETS = {
+    frozenset(LEGACY_REQUIRED_DIMENSIONS),
+    frozenset(REQUIRED_DIMENSIONS),
+}
 VERDICTS = {"winner", "tie", "both_flawed", "needs_context"}
 
 
@@ -181,10 +196,13 @@ Rules:
 2. First split the English source into atomic propositions. Do not score Chinese style before checking content.
 3. For every anonymous version and every proposition, record `preserved`, `partial`, `omitted`, or `distorted`, with Chinese evidence and a reason.
 4. Record additions and other issues with severity: `minor`, `major`, or `critical`.
-5. Only after fidelity, assess natural Simplified Chinese, logic/references, terminology, voice, and rhythm.
-6. Rank every label. Tied labels share one ranking group. Use `both_flawed` in the overall assessment when no version is acceptable.
-7. Do not guess or discuss which version came from which source. Do not access files outside the assigned blind directory.
-8. A result without concrete evidence and reasons is invalid.
+5. Fidelity and native Chinese writing are separate hard gates. A faithful version that preserves English syntax, information order, or rhetorical packaging and therefore reads like a translation must be marked for revision; naturalness is not a bonus point.
+6. Chinese restructuring is allowed and expected: split or merge sentences, reorder clauses, change the grammatical subject, and replace an English idiom with a neutral Chinese equivalent, provided every source proposition, logical relation, qualification, and rhetorical function survives.
+7. Localize expression, not authorial content. Do not replace the author's people, places, institutions, analogies, or examples. If a reference remains opaque, prefer concise clarification and flag it for review.
+8. Judge `native_chinese_structure`, logic/references, terminology, voice, and rhythm only after proposition coverage is recorded. Use a Chinese-only read to detect translationese.
+9. Rank every label. Tied labels share one ranking group. Use `both_flawed` in the overall assessment when no version passes both hard gates.
+10. Do not guess or discuss which version came from which source. Do not access files outside the assigned blind directory.
+11. A result without concrete evidence and reasons is invalid.
 
 Result JSON schema (one JSON object per line):
 
@@ -196,10 +214,10 @@ Result JSON schema (one JSON object per line):
     "A": {
       "coverage": [{"proposition_id": "P1", "status": "preserved", "evidence": "quoted Chinese", "reason": "why"}],
       "additions": [{"evidence": "quoted Chinese", "severity": "minor", "reason": "why"}],
-      "issues": [{"category": "naturalness", "evidence": "quoted Chinese", "severity": "minor", "reason": "why"}],
+      "issues": [{"category": "native_chinese_structure", "evidence": "quoted Chinese", "severity": "minor", "reason": "why"}],
       "worst_severity": "minor",
       "dimensions": {
-        "naturalness": {"rating": "strong", "evidence": "quoted Chinese", "reason": "why"},
+        "native_chinese_structure": {"rating": "strong", "evidence": "quoted Chinese", "reason": "why"},
         "logic_references": {"rating": "strong", "evidence": "quoted Chinese", "reason": "why"},
         "terminology": {"rating": "acceptable", "evidence": "quoted Chinese", "reason": "why"},
         "voice_rhythm": {"rating": "strong", "evidence": "quoted Chinese", "reason": "why"}
@@ -404,7 +422,7 @@ def validate_results(output: Path, pass_name: str) -> int:
             if assessment.get("worst_severity") not in ERROR_SEVERITIES:
                 raise ValueError(f"invalid severity for {label} at {blind_id}")
             dimensions = assessment.get("dimensions", {})
-            if set(dimensions) != REQUIRED_DIMENSIONS:
+            if frozenset(dimensions) not in ACCEPTED_DIMENSION_SETS:
                 raise ValueError(f"dimensions incomplete for {label} at {blind_id}")
             for dimension, item in dimensions.items():
                 if item.get("rating") not in DIMENSION_RATINGS or not item.get(
