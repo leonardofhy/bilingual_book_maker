@@ -1,0 +1,4 @@
+interface:
+  display_name: "英文书籍高精度简中翻译"
+  short_description: "以双轨审校将英文书稿翻译、重写并核验为出版级简体中文"
+  default_prompt: "使用 $translate-book-zh-hans 将这段英文书稿翻译为出版级简体中文，并完成忠实度回核。"
