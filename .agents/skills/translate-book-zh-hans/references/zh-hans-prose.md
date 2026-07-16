@@ -46,6 +46,10 @@ Turn category labels into a process when Chinese otherwise sounds translated.
 
 Restore the reacting people as subjects when English says an idea “was met by” a response. State who reacted, how, and—only if the source entails it—what they did.
 
+### Cross-domain analogies
+
+Identify the source situation, the comparison domain, and the intended shared relation before rewriting the sentences. If a Chinese reader cannot tell why the new domain suddenly appears, state the comparison bridge briefly, then present the scenario and its consequence in Chinese reasoning order. Keep the author's example and claim unchanged; do not turn clarification into a new analogy.
+
 ### Quotations and rebuttals
 
 Review the quotation together with the author's response. Reuse plain wording when it exposes the rebuttal. Preserve the quoted speaker's simplicity or overconfidence; do not upgrade it into technical sophistication.
